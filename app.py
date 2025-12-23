@@ -2,70 +2,66 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 
-# --- Physical Constants ---
-GAMMA = 1.4
-CP = 1005 
-R = 287    
+# --- Advanced Constants ---
+LHV = 43_000_000  # Lower Heating Value of Jet-A (J/kg)
+GAMMA_AIR = 1.4
+GAMMA_GAS = 1.33  # Gas properties change after combustion
+CP_AIR = 1005
+CP_GAS = 1150     # Higher Cp for combustion products
 
-def get_ambient_conditions(alt_ft):
-    t_amb = 288.15 - (0.00198 * alt_ft)
-    p_amb = 101325 * (t_amb / 288.15)**5.256
-    return t_amb, p_amb
+st.set_page_config(page_title="AeroPropulse Level 2", layout="wide")
+st.title("🚀 AeroPropulse Pro: Level 2 Performance Suite")
 
-# --- UI Setup ---
-st.set_page_config(page_title="AeroPropulse Tech Report", layout="wide")
-st.title("🚀 AeroPropulse: Propulsion & Structural Analysis")
+# --- Sidebar: Advanced Inputs ---
+st.sidebar.header("Design Parameters")
+alt = st.sidebar.slider("Altitude (ft)", 0, 50000, 35000)
+mach = st.sidebar.slider("Mach Number", 0.0, 2.5, 0.85)
+pr = st.sidebar.slider("Overall Pressure Ratio", 10, 50, 30)
+tit = st.sidebar.slider("TIT (K)", 1000, 2200, 1650)
 
-# Sidebar with UNIQUE KEYS added
-st.sidebar.header("1. Flight Conditions")
-alt = st.sidebar.slider("Altitude (ft)", 0, 50000, 30000, key="alt_slider")
-mach = st.sidebar.slider("Mach Number", 0.0, 2.0, 0.8, key="mach_slider")
-
-st.sidebar.header("2. Engine Design")
-pr = st.sidebar.slider("Compressor Pressure Ratio", 5, 40, 25, key="pr_slider")
-tit = st.sidebar.slider("Turbine Inlet Temp (K)", 1000, 2200, 1600, key="tit_slider")
-m_dot = st.sidebar.number_input("Air Mass Flow (kg/s)", value=50.0, key="mdot_input")
-
-st.sidebar.header("3. Material Science")
-material = st.sidebar.selectbox("Blade Material", ["Stainless Steel", "Inconel 718", "CMSX-4 Superalloy"], key="mat_select")
-rpm = st.sidebar.number_input("Engine RPM", value=12000, key="rpm_input")
+st.sidebar.header("Component Efficiencies")
+eta_c = st.sidebar.slider("Isentropic Compressor Eff", 0.8, 0.95, 0.88)
+eta_t = st.sidebar.slider("Isentropic Turbine Eff", 0.8, 0.98, 0.92)
+eta_b = st.sidebar.slider("Burner Efficiency", 0.9, 1.0, 0.98)
 
 # --- Math Logic ---
-t_amb, p_amb = get_ambient_conditions(alt)
-v_flight = mach * np.sqrt(GAMMA * R * t_amb)
-t2 = t_amb * (1 + 0.5 * (GAMMA - 1) * mach**2)
-p2 = p_amb * (t2 / t_amb)**(GAMMA / (GAMMA - 1))
+t_amb = 288.15 - (0.00198 * alt)
+p_amb = 101325 * (t_amb / 288.15)**5.256
+v_flight = mach * np.sqrt(GAMMA_AIR * 287 * t_amb)
+
+# Inlet
+t2 = t_amb * (1 + 0.5 * (GAMMA_AIR - 1) * mach**2)
+p2 = p_amb * (t2 / t_amb)**(GAMMA_AIR / (GAMMA_AIR - 1))
+
+# Compressor (Real-world losses included)
 p3 = p2 * pr
-t3 = t2 * (pr**((GAMMA-1)/GAMMA))
+t3_ideal = t2 * (pr**((GAMMA_AIR-1)/GAMMA_AIR))
+t3 = t2 + (t3_ideal - t2) / eta_c
+
+# Combustor (Fuel-Air Ratio Calculation)
+# Calculation of fuel needed to reach TIT
+f = (CP_GAS * tit - CP_AIR * t3) / (eta_b * LHV - CP_GAS * tit)
+
+# Turbine (Work Balance with f)
+# Power_c = Power_t -> CP_AIR * (T3 - T2) = (1 + f) * CP_GAS * (T4 - T5)
 t4 = tit
-t5 = t4 - (t3 - t2)
-p5 = p3 * (t5 / t4)**(GAMMA / (GAMMA - 1))
-v_e = np.sqrt(max(0, 2 * CP * t5 * (1 - (p_amb/p5)**((GAMMA-1)/GAMMA))))
-thrust = m_dot * (v_e - v_flight)
+t5 = t4 - (CP_AIR * (t3 - t2)) / ((1 + f) * CP_GAS)
+p5 = p3 * (t5 / t4)**(GAMMA_GAS / ((GAMMA_GAS - 1) * eta_t))
 
-# --- Material Check ---
-stress_mpa = (rpm / 1000)**2 * 2.5 
-def get_strength(mat, temp):
-    if mat == "Stainless Steel": return max(0, 500 - (temp-300)*0.8)
-    if mat == "Inconel 718": return max(0, 1000 - (temp-400)*0.5)
-    return max(0, 1200 - (temp-600)*0.3)
-yield_str = get_strength(material, t4)
+# Nozzle & Thrust
+v_e = np.sqrt(max(0, 2 * CP_GAS * t5 * (1 - (p_amb/p5)**((GAMMA_GAS-1)/GAMMA_GAS))))
+thrust_specific = (1 + f) * v_e - v_flight
+sfc = (f / thrust_specific) * 1_000_000 # mg/Ns (Industry Standard)
 
-# --- Layout ---
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("Performance Metrics")
-    st.metric("Net Thrust", f"{round(thrust/1000, 2)} kN")
-    st.metric("Exhaust Velocity", f"{round(v_e, 1)} m/s")
-    
-    fig, ax = plt.subplots()
-    ax.plot(['Amb', '2', '3', '4', '5'], [t_amb, t2, t3, t4, t5], marker='o', color='red')
-    ax.set_ylabel("Temperature (K)")
-    st.pyplot(fig)
+# --- Results Display ---
+col1, col2, col3 = st.columns(3)
+col1.metric("Specific Thrust", f"{round(thrust_specific, 1)} N/(kg/s)")
+col2.metric("Fuel-Air Ratio (f)", f"{round(f, 4)}")
+col3.metric("SFC", f"{round(sfc, 2)} mg/Ns")
 
-with col2:
-    st.subheader("Structural Integrity")
-    if stress_mpa > yield_str:
-        st.error(f"❌ FAILURE: {material} yields at {round(t4)}K")
-    else:
-        st.success(f"✅ SAFE: Factor of Safety {round(yield_str/stress_mpa, 2)}")
+# Visualization: T-s Diagram
+fig, ax = plt.subplots()
+ax.plot(['Amb', '2', '3', '4', '5'], [t_amb, t2, t3, t4, t5], marker='s', color='#1f77b4', label="Actual Cycle")
+ax.set_ylabel("Temperature (K)")
+ax.grid(True, linestyle='--')
+st.pyplot(fig)
